@@ -39,7 +39,7 @@ After installation, configure the integration in Home Assistant:
 
 ## Support
 
-For support and questions, visit our community forum: [ezloPi Community](https://community.ezlo.com/c/ezlopi/249/)
+For support and questions, visit our community forum: [ezloPi Community](https://community.ezlo.com/c/ezlopi/ezlopi-homeassistant/250/)
 
 ## Contributing
 
