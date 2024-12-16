@@ -1,0 +1,19 @@
+{
+  "domain": "ezlopi",
+  "name": "ezloPi",
+  "version": "1.0",
+  "requirements": [ "websockets", "websocket-client" ],
+  "dependencies": [],
+  "codeowners": [],
+  "iot_class": "local_polling",
+  "config_flow": true,
+  "documentation": "",
+  "integration_type": "hub",
+  "supported_brands": [
+    "ezloPi"
+  ],
+  "platforms": [
+    "sensor",
+    "switch"
+  ]
+}

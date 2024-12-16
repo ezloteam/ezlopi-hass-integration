@@ -1,0 +1,18 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "data": {
+                    "serial": "Serial Number",
+                    "token": "Token"
+                },
+                "title": "Connect to EzloPI",
+                "description": "Please enter the serial and token for your Ezlo Account.",
+                "errors": {
+                    "missing_required_fields": "Please fill in all required fields.",
+                    "invalid_credentials": "Invalid serial or token. Please try again."
+                }
+            }
+        }
+    }
+}
