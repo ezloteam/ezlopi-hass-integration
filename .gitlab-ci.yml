@@ -29,15 +29,19 @@ sync-to-github:
     # Determine the commit message from the triggering commit BEFORE moving HEAD.
     # NOTE: this must happen before any `git reset`, otherwise HEAD points at
     # github/master (linear history, no merge commits) and detection fails.
+    # The body is read into a file and parsed with pure-shell loops (no
+    # grep|sed|head pipelines) so the job can't die from SIGPIPE/pipefail.
     - |
+      set +o pipefail 2>/dev/null || true
       SOURCE_SHA="${CI_COMMIT_SHA}"
 
-      # Is the triggering commit itself a merge commit? (>=2 parents => >=3 fields)
-      NUM_FIELDS=$(git rev-list --parents -n1 "$SOURCE_SHA" | wc -w)
-      if [ "$NUM_FIELDS" -ge 3 ]; then
+      # Is the triggering commit itself a merge commit? (a merge has >=2 parents,
+      # so `<sha> <parent1> <parent2> ...` is >=3 whitespace-separated fields)
+      set -- $(git rev-list --parents -n1 "$SOURCE_SHA")
+      if [ "$#" -ge 3 ]; then
         MERGE_COMMIT="$SOURCE_SHA"
       else
-        MERGE_COMMIT=$(git log --merges -1 --format=%H "$SOURCE_SHA" 2>/dev/null)
+        MERGE_COMMIT=$(git log --merges -1 --format=%H "$SOURCE_SHA" 2>/dev/null || true)
       fi
 
       if [ -z "$MERGE_COMMIT" ]; then
@@ -46,38 +50,51 @@ sync-to-github:
         exit 1
       fi
 
-      # Look for merge request IID in the merge commit message
-      MR_IID=$(git log -1 --format=%B "$MERGE_COMMIT" | grep "See merge request" | sed -n 's/.*!\([0-9]*\)$/\1/p')
+      # Read the merge commit body once; parse it without fragile pipelines.
+      git log -1 --format=%B "$MERGE_COMMIT" > /tmp/merge_body.txt
 
-      COMMIT_MSG=""
+      # Extract the GitLab MR IID from the "See merge request ...!N" trailer.
+      MR_IID=""
+      while IFS= read -r line; do
+        case "$line" in
+          *"See merge request"*!*)
+            iid="${line##*!}"        # text after the last '!'
+            iid="${iid%%[!0-9]*}"    # keep only the leading digits
+            [ -n "$iid" ] && MR_IID="$iid"
+            ;;
+        esac
+      done < /tmp/merge_body.txt
+
+      # Build the commit message from the MR title/description when available.
+      : > /tmp/commit_msg.txt
       if [ -n "$MR_IID" ] && [ -n "$CI_PROJECT_ID" ]; then
-        # Fetch MR details using GitLab API
         MR_DATA=$(curl -s -H "PRIVATE-TOKEN: ${GITLAB_TOKEN:-$CI_JOB_TOKEN}" \
-          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}")
-        MR_TITLE=$(echo "$MR_DATA" | jq -r '.title // empty')
-        MR_DESC=$(echo "$MR_DATA" | jq -r '.description // empty')
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}" || true)
+        MR_TITLE=$(printf '%s' "$MR_DATA" | jq -r '.title // empty' 2>/dev/null || true)
+        MR_DESC=$(printf '%s' "$MR_DATA" | jq -r '.description // empty' 2>/dev/null || true)
         if [ -n "$MR_TITLE" ]; then
-          COMMIT_MSG="$MR_TITLE"
+          printf '%s\n' "$MR_TITLE" > /tmp/commit_msg.txt
           if [ -n "$MR_DESC" ] && [ "$MR_DESC" != "null" ]; then
-            COMMIT_MSG="$MR_TITLE
-
-      $MR_DESC"
+            printf '\n%s\n' "$MR_DESC" >> /tmp/commit_msg.txt
           fi
         fi
       fi
 
-      # Fallback: first meaningful line of the merge commit message
-      if [ -z "$COMMIT_MSG" ]; then
-        COMMIT_MSG=$(git log -1 --format=%B "$MERGE_COMMIT" | grep -v "^Merge branch" | grep -v "^Merge remote-tracking" | grep -v "^See merge request" | grep -v "^$" | head -n 1)
+      # Fallback: first meaningful line of the merge commit body.
+      if [ ! -s /tmp/commit_msg.txt ]; then
+        while IFS= read -r line; do
+          case "$line" in
+            "Merge branch"*|"Merge remote-tracking"*|"See merge request"*|"") : ;;
+            *) printf '%s\n' "$line" > /tmp/commit_msg.txt; break ;;
+          esac
+        done < /tmp/merge_body.txt
       fi
 
-      if [ -z "$COMMIT_MSG" ]; then
+      if [ ! -s /tmp/commit_msg.txt ]; then
         echo "ERROR: Could not determine a commit message. Skipping GitHub sync."
         exit 1
       fi
 
-      # Hand the message to later steps
-      printf '%s\n' "$COMMIT_MSG" > /tmp/commit_msg.txt
       echo "Sync commit message:"
       cat /tmp/commit_msg.txt
 
