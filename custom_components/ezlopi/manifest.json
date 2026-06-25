@@ -7,7 +7,7 @@
   "codeowners": [ "@ezloteam" ],
   "iot_class": "local_push",
   "config_flow": true,
-  "documentation": "https://github.com/ezloteam/ezlopi-hass-integration",
+  "documentation": "https://github.com/ezloteam/homeassistant-ezlopi",
   "integration_type": "hub",
   "zeroconf": [
     "_ezlo._tcp.local."

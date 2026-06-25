@@ -25,5 +25,5 @@ git add custom_integrations/ezlopi
 git commit -m "Add ezlopi brand"
 git push -u origin ezlopi-brand
 gh pr create --repo home-assistant/brands --title "Add ezlopi brand" \
-  --body "Brand assets for the ezloPi custom integration (https://github.com/ezloteam/ezlopi-hass-integration)."
+  --body "Brand assets for the ezloPi custom integration (https://github.com/ezloteam/homeassistant-ezlopi)."
 ```
