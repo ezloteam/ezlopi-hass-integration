@@ -66,6 +66,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         global switches
         switches_local = [EzloSwitch(device, hass, connection, serial) for device in devices if device["type"] == "switch"]
         _LOGGER.info('switches_local is {}'.format(switches_local))
+        # Log device detection for debugging
+        for device in devices:
+            _LOGGER.debug(f"Device '{device.get('name')}' detected as platform: {device.get('type')}, class: {device.get('deviceClass')}")
         async_add_entities(switches_local)
         connection.add_callback(callback)
         switches += switches_local

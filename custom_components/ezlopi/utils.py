@@ -1,6 +1,8 @@
 import logging
 import asyncio
 import json
+from .device_types import detect_device_platform, get_additional_entities
+
 _LOGGER = logging.getLogger(__name__)
 
 import subprocess
@@ -74,6 +76,19 @@ def getItemsData(connector, id=''):
     if json_data == None:
         return
 
+    # Get device metadata if available
+    devices_data = get_devices(connector) or []
+    device_metadata = {}
+    for device in devices_data:
+        device_id = device.get("_id")
+        if device_id:
+            device_metadata[device_id] = {
+                "deviceType": device.get("deviceTypeId"),
+                "category": device.get("category"),
+                "subcategory": device.get("subcategory"),
+                "armed": device.get("armed", False)
+            }
+
     for json_item in json_data:
         if json_item["show"] == True:
             valueType = json_item["valueType"]
@@ -83,34 +98,76 @@ def getItemsData(connector, id=''):
             deviceId = json_item["deviceId"]
             deviceName = getDeviceName(deviceId, connector)
 
-            if valueType == 'bool':
-                controlType = "switch"
-
-                if value == True:
-                    value = 'on'
-                else:
-                    value = 'off'
-
-            elif valueType == 'int' or valueType == 'float' or valueType == 'token' or valueType == 'string' or valueType == 'dictionary' or valueType == 'temperature' or valueType == 'humidity':
-                controlType = "sensor"
-            else:
-                continue
-
-
-            element = {"name": json_item["name"], "id": json_item["_id"], "deviceId": json_item["deviceId"],
-                       "type": controlType, "value": value, "deviceName": deviceName,
-                       "hasSetter": json_item["hasSetter"], 'deviceClass': None, 'unitOfMeasurement': None}
+            # Build device info for detection
+            device_info = {
+                "name": json_item["name"],
+                "deviceName": deviceName,
+                "valueType": valueType,
+                "hasSetter": json_item["hasSetter"],
+                "scale": scale,
+                "value": value
+            }
             
-            if(valueType in ['temperature', 'humidity']):
+            # Add device metadata if available
+            if deviceId in device_metadata:
+                device_info.update(device_metadata[deviceId])
+            
+            # Use enhanced device detection
+            detection_result = detect_device_platform(device_info)
+            controlType = detection_result["platform"]
+            deviceClass = detection_result.get("device_class")
+            
+            # Handle value conversion based on platform
+            if controlType == "switch" and valueType == 'bool':
+                value = 'on' if value else 'off'
+            elif controlType == "binary_sensor" and valueType == 'bool':
+                # Keep boolean for binary sensors
+                pass
+            elif controlType == "light" and valueType in ['int', 'float']:
+                # Keep numeric value for brightness
+                pass
+
+            element = {
+                "name": json_item["name"], 
+                "id": json_item["_id"], 
+                "deviceId": json_item["deviceId"],
+                "type": controlType, 
+                "value": value, 
+                "deviceName": deviceName,
+                "hasSetter": json_item["hasSetter"], 
+                "deviceClass": deviceClass, 
+                "unitOfMeasurement": None
+            }
+            
+            # Add metadata to element
+            if deviceId in device_metadata:
+                element["category"] = device_metadata[deviceId].get("category")
+                element["subcategory"] = device_metadata[deviceId].get("subcategory")
+                element["deviceType"] = device_metadata[deviceId].get("deviceType")
+                element["armed"] = device_metadata[deviceId].get("armed")
+            
+            # Handle unit of measurement
+            if valueType in ['temperature', 'humidity'] and not deviceClass:
                 element['deviceClass'] = valueType
             
-            if(scale != None):
-                if(scale == 'celsius'):
+            # Special handling for battery sensors
+            if deviceClass == 'battery':
+                element['unitOfMeasurement'] = '%'
+                # Ensure battery value is numeric
+                if isinstance(value, (int, float)):
+                    element['value'] = int(value)
+            
+            if scale != None:
+                if scale == 'celsius':
                     element['unitOfMeasurement'] = '°C'
+                elif scale == 'fahrenheit':
+                    element['unitOfMeasurement'] = '°F'
+                elif scale == 'percent':
+                    element['unitOfMeasurement'] = '%'
                 else:
                     element['unitOfMeasurement'] = scale
             
-            if(valueType == 'humidity'):
+            if valueType == 'humidity' and not element['unitOfMeasurement']:
                 element['unitOfMeasurement'] = '%'
 
             if itemId == id:
@@ -150,3 +207,46 @@ async def ping_host(ip_address):
     except Exception as e:
         _LOGGER.error(f"Error during ping: {e}")
         return False
+
+def extract_battery_info(devices):
+    """Extract battery information for all devices.
+    
+    Returns dict mapping device_id to battery info.
+    """
+    battery_info = {}
+    
+    for device in devices:
+        device_id = device.get("deviceId")
+        if not device_id:
+            continue
+            
+        # Check if this is a battery sensor
+        if device.get("deviceClass") == "battery":
+            parent_device_id = device.get("deviceId")
+            if parent_device_id not in battery_info:
+                battery_info[parent_device_id] = {
+                    "battery_level": device.get("value", 0),
+                    "battery_item_id": device.get("id"),
+                    "has_battery": True
+                }
+    
+    return battery_info
+
+def get_device_battery_level(device_id, connector):
+    """Get battery level for a specific device."""
+    devices = getItemsData(connector)
+    if not devices:
+        return None
+        
+    for device in devices:
+        if (device.get("deviceId") == device_id and 
+            device.get("deviceClass") == "battery"):
+            return device.get("value")
+    
+    return None
+
+def should_create_low_battery_sensor(battery_level, threshold=20):
+    """Check if a low battery sensor should be created."""
+    if battery_level is None:
+        return False
+    return isinstance(battery_level, (int, float)) and battery_level < threshold

@@ -1,0 +1,108 @@
+stages:
+  - sync
+
+variables:
+  GIT_DEPTH: 0  # Full clone to preserve history for squashing
+  GITHUB_REPO: "ezloteam/ezlopi-hass-integration"
+
+sync-to-github:
+  stage: sync
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git curl jq
+  only:
+    - master
+  script:
+    # Configure git
+    - git config --global user.email "ci@ezlo.com"
+    - git config --global user.name "eZLO CI"
+
+    # Add GitHub remote
+    - git remote add github "https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git" || git remote set-url github "https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
+
+    # Fetch GitHub master to compare
+    - git fetch github master || true
+
+    # Determine the commit message from the triggering commit BEFORE moving HEAD.
+    # NOTE: this must happen before any `git reset`, otherwise HEAD points at
+    # github/master (linear history, no merge commits) and detection fails.
+    - |
+      SOURCE_SHA="${CI_COMMIT_SHA}"
+
+      # Is the triggering commit itself a merge commit? (>=2 parents => >=3 fields)
+      NUM_FIELDS=$(git rev-list --parents -n1 "$SOURCE_SHA" | wc -w)
+      if [ "$NUM_FIELDS" -ge 3 ]; then
+        MERGE_COMMIT="$SOURCE_SHA"
+      else
+        MERGE_COMMIT=$(git log --merges -1 --format=%H "$SOURCE_SHA" 2>/dev/null)
+      fi
+
+      if [ -z "$MERGE_COMMIT" ]; then
+        echo "ERROR: No merge commit found. GitHub sync is only for merge request commits."
+        echo "Direct commits to master will not be synced to GitHub."
+        exit 1
+      fi
+
+      # Look for merge request IID in the merge commit message
+      MR_IID=$(git log -1 --format=%B "$MERGE_COMMIT" | grep "See merge request" | sed -n 's/.*!\([0-9]*\)$/\1/p')
+
+      COMMIT_MSG=""
+      if [ -n "$MR_IID" ] && [ -n "$CI_PROJECT_ID" ]; then
+        # Fetch MR details using GitLab API
+        MR_DATA=$(curl -s -H "PRIVATE-TOKEN: ${GITLAB_TOKEN:-$CI_JOB_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}")
+        MR_TITLE=$(echo "$MR_DATA" | jq -r '.title // empty')
+        MR_DESC=$(echo "$MR_DATA" | jq -r '.description // empty')
+        if [ -n "$MR_TITLE" ]; then
+          COMMIT_MSG="$MR_TITLE"
+          if [ -n "$MR_DESC" ] && [ "$MR_DESC" != "null" ]; then
+            COMMIT_MSG="$MR_TITLE
+
+      $MR_DESC"
+          fi
+        fi
+      fi
+
+      # Fallback: first meaningful line of the merge commit message
+      if [ -z "$COMMIT_MSG" ]; then
+        COMMIT_MSG=$(git log -1 --format=%B "$MERGE_COMMIT" | grep -v "^Merge branch" | grep -v "^Merge remote-tracking" | grep -v "^See merge request" | grep -v "^$" | head -n 1)
+      fi
+
+      if [ -z "$COMMIT_MSG" ]; then
+        echo "ERROR: Could not determine a commit message. Skipping GitHub sync."
+        exit 1
+      fi
+
+      # Hand the message to later steps
+      printf '%s\n' "$COMMIT_MSG" > /tmp/commit_msg.txt
+      echo "Sync commit message:"
+      cat /tmp/commit_msg.txt
+
+    # Check if there are changes to push
+    - |
+      if git diff --quiet "$CI_COMMIT_SHA" github/master 2>/dev/null; then
+        echo "No changes to sync to GitHub"
+        exit 0
+      fi
+
+    # Build a squashed commit on top of GitHub's master
+    - git checkout -b temp-squash-branch "$CI_COMMIT_SHA"
+    - |
+      if git rev-parse --verify github/master >/dev/null 2>&1; then
+        # Preserve GitHub history, add a single squashed commit with this MR's diff
+        git reset --soft github/master
+      else
+        echo "GitHub repository is empty, will push entire history as single commit"
+        git checkout --orphan temp-squash-branch
+        git add -A
+      fi
+
+    - git add -A
+    - git commit -F /tmp/commit_msg.txt || echo "No changes to commit"
+
+    # Force push to GitHub master (squashed history)
+    - git push github HEAD:master --force
+
+  environment:
+    name: github
+    url: https://github.com/ezloteam/ezlopi-hass-integration

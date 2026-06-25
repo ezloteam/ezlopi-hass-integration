@@ -10,6 +10,7 @@ class WebsocketConnector(websocket.WebSocketApp):
         self.answers = []
         self.items = []
         self.devices = []
+        self.device_metadata = {}  # Store additional device metadata
         self.callbacks = []
         self.url = url
 
@@ -70,6 +71,19 @@ class WebsocketConnector(websocket.WebSocketApp):
         devices = self.find_answer("devices", json_data)
         if devices != '':
             self.devices = devices
+            # Extract and store device metadata
+            for device in devices:
+                device_id = device.get("_id")
+                if device_id:
+                    self.device_metadata[device_id] = {
+                        "deviceType": device.get("deviceTypeId"),
+                        "category": device.get("category"),
+                        "subcategory": device.get("subcategory"),
+                        "armed": device.get("armed", False),
+                        "room_id": device.get("roomId"),
+                        "battery_powered": device.get("batteryPowered", False)
+                    }
+                    _LOGGER.debug(f"Stored metadata for device {device_id}: {self.device_metadata[device_id]}")
 
     def find_answer(self, name, data):
         result = data["result"]
@@ -127,3 +141,7 @@ class WebsocketConnector(websocket.WebSocketApp):
         except socket.error as e:
             _LOGGER.error(f"Could not resolve IP for {hostname}: {e}")
             return None
+    
+    def get_device_metadata(self, device_id):
+        """Get stored metadata for a specific device."""
+        return self.device_metadata.get(device_id, {})

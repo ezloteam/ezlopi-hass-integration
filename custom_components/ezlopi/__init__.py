@@ -13,10 +13,12 @@ from .ws_api import WsApi
 
 _LOGGER = logging.getLogger(__name__)
 
-SUPPORTED_DOMAINS = ['sensor', 'switch']
+SUPPORTED_DOMAINS = ['sensor', 'switch', 'binary_sensor', 'light', 'lock', 'climate']
 PLATFORMS: list[Platform] = [
-    # Platform.BINARY_SENSOR,
-    # Platform.CLIMATE,
+    Platform.BINARY_SENSOR,
+    Platform.CLIMATE,
+    Platform.LIGHT,
+    Platform.LOCK,
     # Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
