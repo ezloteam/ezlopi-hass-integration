@@ -1,234 +1,94 @@
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
-from homeassistant.config_entries import ConfigEntry
+"""Sensor platform for the ezloPi integration."""
+from __future__ import annotations
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from .utils import *
-import logging
-import asyncio
-from .const import DOMAIN
 
-_LOGGER = logging.getLogger(__name__)
+from . import EzloConfigEntry
+from .coordinator import EzloDataUpdateCoordinator
+from .entity import EzloEntity, async_setup_ezlo_platform
+from typing import Any
 
-sensors = []
+# Push integration: there is no per-entity polling to serialize.
+PARALLEL_UPDATES = 0
 
-async def async_update_sensors(event):
-    event_data = event.data
-    sensor_id = event_data.get('id', None)
+_DEVICE_CLASS_MAP = {
+    "battery": SensorDeviceClass.BATTERY,
+    "temperature": SensorDeviceClass.TEMPERATURE,
+    "humidity": SensorDeviceClass.HUMIDITY,
+    "power": SensorDeviceClass.POWER,
+    "energy": SensorDeviceClass.ENERGY,
+    "voltage": SensorDeviceClass.VOLTAGE,
+    "current": SensorDeviceClass.CURRENT,
+    "pressure": SensorDeviceClass.PRESSURE,
+    "illuminance": SensorDeviceClass.ILLUMINANCE,
+}
 
-    if sensor_id:
-        for sensor in sensors:
-            if sensor.get_device_id() == sensor_id:
-                await sensor.async_update()
-                sensor.async_schedule_update_ha_state(True)
-    else:
-        await update_sensors()
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: EzloConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up ezloPi sensors from the coordinators on this entry."""
+    for coordinator in entry.runtime_data.coordinators:
+        async_setup_ezlo_platform(
+            coordinator, "sensor", EzloSensor, async_add_entities
+        )
 
 
-async def update_sensors():
-    for sensor in sensors:
-        _LOGGER.info(f"Updating sensor {sensor.name}")
-        await sensor.async_update()
-        sensor.async_schedule_update_ha_state(True)
+class EzloSensor(EzloEntity, SensorEntity):
+    """An ezloPi sensor item."""
 
-def callback():
-    pass
-
-# async def update_sensors():
-#     for sensor in sensors:
-#         await sensor.async_update()
-#         asyncio.create_task(sensor.async_schedule_update_ha_state(True))
-
-# async def async_setup_platform(hass, config, async_add_entities, hubInfo):
-#     _LOGGER.info('async_setup_platform:{} {} {}'.format(config, async_add_entities, hubInfo))
-#     await asyncio.sleep(5)
-#     hass.bus.async_listen('update_all_sensors_and_switches', async_update_sensors)
-
-#     for key, value in hubInfo.items():
-#         serial = key
-#         connection = value
-
-#         devices = await get_devices_from_platform(connection)
-#         global sensors
-#         sensors_local = [EzloSensor(device, hass, connection, serial) for device in devices if device["type"] == "sensor"]
-#         _LOGGER.info('sensors_local is {}'.format(sensors_local))
-#         async_add_entities(sensors_local)
-#         connection.add_callback(callback)
-#         sensors += sensors_local
-#         hass.data['sensors'] = sensors
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
-    hubInfo = hass.data[DOMAIN][entry.entry_id]["hubInfo"]
-    _LOGGER.info('async_setup_platform:{}, {}'.format(async_add_entities, hubInfo))
-    hass.bus.async_listen('update_all_sensors_and_switches', async_update_sensors)
-    await asyncio.sleep(5)
-
-    for key, value in hubInfo.items():
-        serial = key
-        connection = value
-
-        devices = await get_devices_from_platform(connection)
-        global sensors
-        sensors_local = [EzloSensor(device, hass, connection, serial) for device in devices if device["type"] == "sensor"]
-        _LOGGER.info('sensors_local is {}'.format(sensors_local))
-        # Log device detection for debugging
-        for device in devices:
-            _LOGGER.debug(f"Device '{device.get('name')}' detected as platform: {device.get('type')}, class: {device.get('deviceClass')}")
-        async_add_entities(sensors_local)
-        connection.add_callback(callback)
-        sensors += sensors_local
-        hass.data['sensors'] = sensors
-
-class EzloSensor(SensorEntity):
-    def __init__(self, device, hass, connection, serial):
-        _LOGGER.info('we will add {}:{}'.format(serial, device))
-
-        self._hass = hass
-        self._name = serial + ": "
-        self._name = '{}_{}:'.format(serial, device["id"])
-        if 'deviceName' in device:
-             self._name += device["deviceName"] + ": " + device["name"]
-        else:
-            self._name = device["name"]
-
-        self._serial = serial
-        self._device_id = device["id"]
-        self._state = device["value"]
-        self.connection = connection
-        self._device_name = device["name"]
-        self._attr_device_class = self._map_device_class(device.get("deviceClass"))
-        self._attr_unit_of_measurement = device["unitOfMeasurement"]
-        
-        # Set state class for battery sensors
+    def __init__(self, coordinator: EzloDataUpdateCoordinator, element: dict[str, Any]) -> None:
+        super().__init__(coordinator, element)
+        self._attr_device_class = _DEVICE_CLASS_MAP.get(element.get("deviceClass") or "")
+        self._attr_native_unit_of_measurement = element.get("unitOfMeasurement")
         if self._attr_device_class == SensorDeviceClass.BATTERY:
             self._attr_state_class = SensorStateClass.MEASUREMENT
-        
-        self._attributes = {
-            "device_name": device["deviceName"],
-            "device_type": device["type"],
-            "hubDeviceId": device["deviceId"],
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> Any:
+        return self._element.get("value")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        element = self._element
+        attrs = {
+            "device_name": element.get("deviceName"),
+            "device_type": element.get("type"),
+            "hubDeviceId": element.get("deviceId"),
             "sensorId": self._device_id,
-            "unit_of_measurement": device["unitOfMeasurement"],
+            "unit_of_measurement": element.get("unitOfMeasurement"),
         }
-        
-        # Check if this is a battery sensor and add battery status
         if self._attr_device_class == SensorDeviceClass.BATTERY:
-            self._attributes["battery_status"] = self._get_battery_status(device.get("value"))
-        
-        self._unique_id = f"{self._serial}_{self._device_id}"
-    
-    @property
-    def unique_id(self):
-        return self._unique_id
-    
-    @property
-    def device_info(self):
-        """Return device information for this entity."""
-        return {
-            "identifiers": {(DOMAIN, self._serial)},
-        }
-
-    def get_device_name(self):
-        return self._device_name
-
-    def get_device_id(self):
-        return self._device_id
-
-    async def rebuild_platform(self):
-        await self._hass.services.async_call("custom_component", "rebuild_platform")
+            attrs["battery_status"] = self._get_battery_status(element.get("value"))
+        return attrs
 
     @property
-    def name(self):
-        return self._name
-
-    @property
-    def state(self):
-        return self._state
-
-    async def test_connection(self):
-        ip_address = self.connection.get_ip_address()
-        if not await ping_host(ip_address):
-            self._state = None
-
-    async def async_update(self):
-        # self.connection.send_serial_log_enable_message()
-        # self.connection.send_some_query_params()
-        self._state = await get_device_data(self._device_id, self.connection)
-
-    @property
-    def extra_state_attributes(self):
-        return self._attributes
-    
-    def _map_device_class(self, device_class_str):
-        """Map string device class to SensorDeviceClass enum."""
-        if not device_class_str:
+    def icon(self) -> str | None:
+        """Battery sensors get a level-appropriate icon."""
+        if self._attr_device_class != SensorDeviceClass.BATTERY:
             return None
-            
-        mapping = {
-            "battery": SensorDeviceClass.BATTERY,
-            "temperature": SensorDeviceClass.TEMPERATURE,
-            "humidity": SensorDeviceClass.HUMIDITY,
-            "power": SensorDeviceClass.POWER,
-            "energy": SensorDeviceClass.ENERGY,
-            "voltage": SensorDeviceClass.VOLTAGE,
-            "current": SensorDeviceClass.CURRENT,
-            "pressure": SensorDeviceClass.PRESSURE,
-            "illuminance": SensorDeviceClass.ILLUMINANCE,
-        }
-        
-        return mapping.get(device_class_str, None)
-    
-    def _get_battery_status(self, battery_level):
-        """Get battery status description based on level."""
-        if battery_level is None:
-            return "unknown"
-        
         try:
-            level = float(battery_level)
-            if level > 75:
-                return "good"
-            elif level > 50:
-                return "fair"
-            elif level > 25:
-                return "low"
-            elif level > 10:
-                return "critical"
-            else:
-                return "very_low"
+            level = float(self.native_value) if self.native_value is not None else 0
         except (ValueError, TypeError):
-            return "unknown"
-    
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend."""
-        if self._attr_device_class == SensorDeviceClass.BATTERY:
-            level = self.state
-            try:
-                level = float(level) if level is not None else 0
-                if level >= 95:
-                    return "mdi:battery"
-                elif level >= 85:
-                    return "mdi:battery-90"
-                elif level >= 75:
-                    return "mdi:battery-80"
-                elif level >= 65:
-                    return "mdi:battery-70"
-                elif level >= 55:
-                    return "mdi:battery-60"
-                elif level >= 45:
-                    return "mdi:battery-50"
-                elif level >= 35:
-                    return "mdi:battery-40"
-                elif level >= 25:
-                    return "mdi:battery-30"
-                elif level >= 15:
-                    return "mdi:battery-20"
-                elif level >= 5:
-                    return "mdi:battery-10"
-                elif level > 0:
-                    return "mdi:battery-alert"
-                else:
-                    return "mdi:battery-unknown"
-            except (ValueError, TypeError):
-                return "mdi:battery-unknown"
-        
-        return None
+            return "mdi:battery-unknown"
+        if level >= 95:
+            return "mdi:battery"
+        for threshold, suffix in (
+            (85, "-90"), (75, "-80"), (65, "-70"), (55, "-60"), (45, "-50"),
+            (35, "-40"), (25, "-30"), (15, "-20"), (5, "-10"),
+        ):
+            if level >= threshold:
+                return f"mdi:battery{suffix}"
+        if level > 0:
+            return "mdi:battery-alert"
+        return "mdi:battery-unknown"

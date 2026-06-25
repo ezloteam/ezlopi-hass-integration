@@ -1,172 +1,64 @@
-from homeassistant.helpers.entity import ToggleEntity
-from homeassistant.config_entries import ConfigEntry
+"""Switch platform for the ezloPi integration."""
+from __future__ import annotations
+
+from typing import Any
+
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-import logging
-import time
-from .const import DOMAIN
-from .utils import *
 
-_LOGGER = logging.getLogger(__name__)
-sensors = []
+from . import EzloConfigEntry
+from .coordinator import EzloDataUpdateCoordinator
+from .entity import EzloEntity, async_setup_ezlo_platform
 
-switches = []
-
-def callback():
-    pass
-
-async def async_update_switches(event):
-    event_data = event.data
-    switch_id = event_data.get('id', None)
-
-    if switch_id:
-        for switch in switches:
-            if switch.get_device_id() == switch_id:
-                await switch.async_update()
-                switch.async_schedule_update_ha_state(True)
-    else:
-        await update_switches()
+PARALLEL_UPDATES = 0
 
 
-async def update_switches():
-    for switch in switches:
-        _LOGGER.info(f"Updating switch {switch.name}")
-        await switch.async_update()
-        switch.async_schedule_update_ha_state(True)
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: EzloConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up ezloPi switches (standalone on/off devices only)."""
+    for coordinator in entry.runtime_data.coordinators:
+        async_setup_ezlo_platform(
+            coordinator, "switch", _make_switch, async_add_entities
+        )
 
 
-# async def async_setup_platform(hass, config, async_add_entities, hubInfo):
-#     hass.bus.async_listen('update_all_sensors_and_switches', async_update_switches)
-#     for key, value in hubInfo.items():
-#         serial = key
-#         connection = value
+def _make_switch(
+    coordinator: EzloDataUpdateCoordinator, element: dict[str, Any]
+) -> "EzloSwitch | None":
+    """Create a switch, unless this on/off item belongs to a dimmer.
 
-#     devices = await get_devices_from_platform(connection)
-#     global switches
-#     switches_local = [EzloSwitch(device, hass, connection, serial) for device in devices if device["type"] == "switch"]
-#     async_add_entities(switches_local)
-#     connection.add_callback(callback)
+    A dimmer device's on/off item is owned by its light entity, so it must not
+    also surface as a standalone switch.
+    """
+    device_id = element.get("deviceId")
+    if any(
+        e.get("deviceId") == device_id and e["type"] == "light"
+        for e in coordinator.data.values()
+    ):
+        return None
+    return EzloSwitch(coordinator, element)
 
-#     switches += switches_local
 
-#     global sensors
-#     sensors = hass.data.get('sensors', [])
+class EzloSwitch(EzloEntity, SwitchEntity):
+    """An ezloPi on/off switch item."""
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
-    hubInfo = hass.data[DOMAIN][entry.entry_id]["hubInfo"]
-    _LOGGER.info('async_setup_platform:{}, {}'.format(async_add_entities, hubInfo))
-    hass.bus.async_listen('update_all_sensors_and_switches', async_update_switches)
-    await asyncio.sleep(5)
+    _attr_translation_key = "switch"
 
-    for key, value in hubInfo.items():
-        serial = key
-        connection = value
-
-        devices = await get_devices_from_platform(connection)
-        global switches
-        switches_local = [EzloSwitch(device, hass, connection, serial) for device in devices if device["type"] == "switch"]
-        _LOGGER.info('switches_local is {}'.format(switches_local))
-        # Log device detection for debugging
-        for device in devices:
-            _LOGGER.debug(f"Device '{device.get('name')}' detected as platform: {device.get('type')}, class: {device.get('deviceClass')}")
-        async_add_entities(switches_local)
-        connection.add_callback(callback)
-        switches += switches_local
-        
-        global sensors
-        sensors = hass.data.get('sensors', [])
-
-class EzloSwitch(ToggleEntity):
-    def __init__(self, device, hass, connection, serial):
-        _LOGGER.info('we will add {}:{}'.format(serial, device))
-        
-        self._hass = hass
-        self._name = '{}_{}:'.format(serial, device["id"])
-        if 'deviceName' in device:
-            self._name += device["deviceName"] + ": " + device["name"]
-        else:
-            self._name = device["name"]
-
-        self._serial = serial
-        self._name_internal = device["deviceName"]
-        self._device_name = device["name"]
-        self._device_id = device["id"]
-        self._state = device["value"]
-        self._hasSetter = device["hasSetter"]
-        self._timing = 0
-        self.connection = connection
-        self._unique_id = f"{self._serial}_{self._device_id}"
-    
-    @property
-    def unique_id(self):
-        return self._unique_id
-    
-    @property
-    def device_info(self):
-        """Return device information for this entity."""
-        return {
-            "identifiers": {(DOMAIN, self._serial)},
-        }
+    def __init__(self, coordinator: EzloDataUpdateCoordinator, element: dict[str, Any]) -> None:
+        super().__init__(coordinator, element)
+        if element.get("deviceClass") == "outlet":
+            self._attr_device_class = SwitchDeviceClass.OUTLET
 
     @property
-    def name(self):
-        return self._name
+    def is_on(self) -> bool:
+        return self._element.get("value") == "on"
 
-    @property
-    def is_on(self):
-        return self._state == "on"
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._async_set_value(self._device_id, True)
 
-    @property
-    def available(self):
-        return self._hasSetter
-
-    async def async_turn_on(self, **kwargs):
-        await self.set_item_value(self._device_id, True)
-        self._state = "on"
-        self.async_write_ha_state()
-        self._timing = time.time()
-
-    async def async_turn_off(self, **kwargs):
-        await self.set_item_value(self._device_id, False)
-        self._state = "off"
-        self.async_write_ha_state()
-        self._timing = time.time()
-
-    def get_device_name(self):
-        return self._device_name
-
-    def get_device_id(self):
-        return self._device_id
-
-    def set_dimmer(self, value):
-        value_item_id = ""
-        for sensor in sensors:
-            name = sensor.get_device_name()
-            if sensor.get_device_name() == "dimmer":
-                value_item_id = sensor.get_device_id()
-
-        dimmer_value = 0
-        if value == True:
-            dimmer_value = 100
-
-        request = set_item_value_request(value_item_id, dimmer_value)
-        self.connection.send_message(json.dumps(request))
-
-        return {}
-
-    async def set_item_value(self, device_id, value):
-        if self._name_internal == "Dimmer":
-            self.set_dimmer(value)
-        else:
-            request = set_item_value_request(device_id, value)
-            self.connection.send_message(json.dumps(request))
-
-    async def test_connection(self):
-        ip_address = self.connection.get_ip_address()
-        if not await ping_host(ip_address):
-            self._state = None
-
-    async def async_update(self):
-     if time.time() - self._timing > 3.0:
-        value = await get_device_data(self._device_id, self.connection)
-        self._state = value
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._async_set_value(self._device_id, False)

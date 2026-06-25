@@ -1,49 +1,64 @@
+from __future__ import annotations
+
 import asyncio
-from tabulate import tabulate
-from homeassistant.components.zeroconf import async_get_instance
-from zeroconf import ServiceListener, ServiceBrowser, ZeroconfServiceTypes
 import logging
+from typing import Any
+
+from homeassistant.components.zeroconf import async_get_instance
+from homeassistant.core import HomeAssistant
+from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
 _LOGGER = logging.getLogger(__name__)
 
 class EzloPiMDSConnector(ServiceListener):
-    def __init__(self, service='_ezlo', proto='_tcp') -> None:
+    def __init__(self, service: str = '_ezlo', proto: str = '_tcp') -> None:
         self.service = service
         self.proto = proto
         self.type = f'{self.service}.{self.proto}.local.'
-        self.zc = None  # Zeroconf instance will be assigned later
-        self.service_dict = dict()
+        self.zc: Zeroconf | None = None  # Zeroconf instance assigned later
+        self.service_dict: dict[str, dict[str, Any]] = {}
         self.service_size = 0
 
-    async def async_init(self, hass):
+    async def async_init(self, hass: HomeAssistant) -> None:
         self.zc = await async_get_instance(hass)
 
 
-    # If services are updated, refer to ServiceListener
-    def update_service(self, zc, type_: str, name: str) -> None:
-        _LOGGER.info(f"Service {name} updated")
+    # A service appearing and a service changing both carry the current info we
+    # need (a hub re-announces via update_service, not just add_service), so
+    # both must (re)store it — otherwise a hub seen only via update is missed.
+    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        self._store_service(zc, type_, name)
 
-    # If services are removed, refer to ServiceListener
-    def remove_service(self, zc, type_: str, name: str) -> None:
-        _LOGGER.info(f"Service {name} removed")
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        self._store_service(zc, type_, name)
 
-    # If services are added, process the service info and set values in a dictionary
-    def add_service(self, zc, type_: str, name: str) -> None:
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        self.service_dict.pop(name, None)
+        _LOGGER.debug("ezlo mDNS service %s removed", name)
+
+    def _store_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         info = zc.get_service_info(type_, name)
-        info_dict = dict()
+        if info is None:
+            return
+        info_dict: dict[str, Any] = dict()
         info_dict['type'] = info.type
         info_dict['name'] = info.name
         info_dict['address'] = info.parsed_addresses()
         info_dict['port'] = info.port
         info_dict['server'] = info.server
-        info_dict['properties'] = {key.decode('utf-8'): value.decode('utf-8') for key, value in info.properties.items()}
+        info_dict['properties'] = {
+            key.decode('utf-8'): value.decode('utf-8')
+            for key, value in info.properties.items()
+            if value is not None
+        }
         info_dict['interface_index'] = info.interface_index
         self.service_dict[name] = info_dict
-        _LOGGER.info('got new service {}'.format(self.service_dict[name]))
+        _LOGGER.debug("ezlo mDNS service %s stored", name)
 
-    async def async_get_service_info(self):
+    async def async_get_service_info(self) -> None:
         await asyncio.sleep(2)
-        _LOGGER.info(f"Autodiscover devices...")
+        _LOGGER.info("Autodiscover devices...")
+        assert self.zc is not None
         self.browser = ServiceBrowser(zc=self.zc, type_=self.type, listener=self)
 
         try:
@@ -51,42 +66,31 @@ class EzloPiMDSConnector(ServiceListener):
                 _LOGGER.info(f"Progress: {i * 10}%")
                 await asyncio.sleep(1)
         finally:
-            _LOGGER.info(f"Service discovery complete.")
+            _LOGGER.info("Service discovery complete.")
 
-    def get_serial(self, data):
+    def get_serial(self, data: dict[str, Any]) -> str:
         properties = data.get('properties', {})
         serial = properties.get('Serial')
 
         if not serial:
             raise KeyError("Key 'Serial' is missing in 'properties'.")
 
-        return serial
+        return str(serial)
 
-    def get_connection_link_from_serial(self, serial=None):
+    def get_connection_link_from_serial(self, serial: str | None = None) -> str | None:
         if serial is None:
             raise ValueError('Expected serial but got None')
 
         for key, value in self.service_dict.items():
             if self.get_serial(value) == serial:
-                # _LOGGER.debug(f'Selected EzloPI PI device: {value}')
-                websocket_address = f'ws://{value["address"][0]}:{value["port"]}'
-                return websocket_address
+                return f'ws://{value["address"][0]}:{value["port"]}'
 
-        _LOGGER.error(f"Link by serial: [{serial}] is not defined")
+        _LOGGER.debug("Hub %s not found on the local network (mDNS)", serial)
         return None
-    
-    def get_connection_links(self):
-        connection_links = {}
+
+    def get_connection_links(self) -> dict[str, str]:
+        connection_links: dict[str, str] = {}
         for key, value in self.service_dict.items():
             serial = self.get_serial(value)
-            # _LOGGER.debug(f'Selected EzloPI PI device: {value}')
-            websocket_address = f'ws://{value["address"][0]}:{value["port"]}'
-            connection_links[serial] = websocket_address
+            connection_links[serial] = f'ws://{value["address"][0]}:{value["port"]}'
         return connection_links
-
-    async def discover_advertised_service_types(self):
-        self.discovered_service_types = ZeroconfServiceTypes.find()
-        self.all_services = [[item for item in service if item] for service in
-                             [service_type.split('.') for service_type in self.discovered_service_types]]
-        _LOGGER.info(
-            f"Discovered services:\n{tabulate(self.all_services, headers=['service', 'protocol', 'domain'], tablefmt='mixed_grid')}")

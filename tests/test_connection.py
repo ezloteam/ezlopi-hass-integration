@@ -1,0 +1,247 @@
+"""Tests for the async hub websocket connection."""
+import asyncio
+import json
+from typing import Any
+from unittest.mock import patch
+
+import aiohttp
+import pytest
+from homeassistant.core import HomeAssistant
+
+from custom_components.ezlopi import connection as conn_mod
+from custom_components.ezlopi.connection import EzloHubConnection
+
+from .fixtures import DEVICES, ITEMS
+
+
+class _Msg:
+    def __init__(self, type_: Any, data: str = "") -> None:
+        self.type = type_
+        self.data = data
+
+
+class _WS:
+    def __init__(self, messages: list[_Msg]) -> None:
+        self._messages = messages
+        self.sent: list[str] = []
+        self.closed = False
+
+    async def __aenter__(self) -> "_WS":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return
+
+    def __aiter__(self) -> "_WS":
+        return self
+
+    async def __anext__(self) -> _Msg:
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+    async def send_str(self, data: str) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _Session:
+    def __init__(self, ws: _WS) -> None:
+        self._ws = ws
+
+    def ws_connect(self, url: str, **kwargs: Any) -> _WS:
+        return self._ws
+
+
+class _Browser:
+    def __init__(self, url: str | None) -> None:
+        self._url = url
+
+    def get_connection_link_from_serial(self, serial: str | None = None) -> str | None:
+        return self._url
+
+
+def _login_then_data() -> _WS:
+    return _WS([
+        _Msg(aiohttp.WSMsgType.TEXT, json.dumps({"method": "hub.offline.login.ui"})),
+        _Msg(aiohttp.WSMsgType.TEXT,
+             json.dumps({"id": "q", "result": {"items": ITEMS, "devices": DEVICES}})),
+        _Msg(aiohttp.WSMsgType.CLOSED),
+    ])
+
+
+def _make(hass: HomeAssistant, ws: _WS, url: str | None = "ws://x:1") -> EzloHubConnection:
+    return EzloHubConnection(
+        hass, _Session(ws), _Browser(url), "105203280", "tok", on_update=lambda: None
+    )
+
+
+async def test_connect_login_and_receive(hass: HomeAssistant) -> None:
+    ws = _login_then_data()
+    c = _make(hass, ws)
+
+    async def _noop_keepalive() -> None:
+        return
+
+    with patch.object(c, "_async_keepalive", _noop_keepalive):
+        await c._async_connect_and_listen("ws://x:1")
+    # login + the two list queries were sent
+    assert any("hub.offline.login.ui" in s for s in ws.sent)
+    assert len(ws.sent) >= 3
+    assert c.items == ITEMS
+    assert c.devices == DEVICES
+    assert c._ready.is_set()
+
+
+async def test_item_update_broadcast(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    c.items = [dict(i) for i in ITEMS]
+    updates: list[int] = []
+    c._on_update = lambda: updates.append(1)
+    c._handle({"id": "ui_broadcast", "msg_subclass": "hub.item.updated",
+               "result": {"_id": "i_light", "value": 99}})
+    assert next(i for i in c.items if i["_id"] == "i_light")["value"] == 99
+    assert updates  # listener notified
+
+
+async def test_handle_ignores_bad_json_and_unknown_item(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    assert c._parse("not json") is None
+    # broadcast for an unknown item id is a no-op
+    c._handle({"id": "ui_broadcast", "msg_subclass": "hub.item.updated",
+               "result": {"_id": "missing", "value": 1}})
+
+
+async def test_async_set_item_value_sends(hass: HomeAssistant) -> None:
+    ws = _WS([])
+    c = _make(hass, ws)
+    c._ws = ws  # type: ignore[assignment]
+    await c.async_set_item_value("i_light", 10)
+    assert json.loads(ws.sent[0])["params"]["_id"] == "i_light"
+
+
+async def test_send_without_connection_raises(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    with pytest.raises(RuntimeError):
+        await c.async_set_item_value("x", 1)
+
+
+async def test_wait_ready_timeout_with_items(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    c.items = list(ITEMS)  # items present -> tolerate timeout
+    with patch.object(conn_mod, "_READY_TIMEOUT", 0):
+        await c.async_wait_ready()
+
+
+async def test_wait_ready_timeout_without_items(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    with patch.object(conn_mod, "_READY_TIMEOUT", 0), pytest.raises(asyncio.TimeoutError):
+        await c.async_wait_ready()
+
+
+async def test_run_raises_repair_issue_when_unreachable(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]), url=None)  # browser never resolves a URL
+    sleeps = {"n": 0}
+
+    async def _sleep(_seconds: float) -> None:
+        sleeps["n"] += 1
+        if sleeps["n"] >= 4:
+            c._closed = True
+
+    with (
+        patch.object(conn_mod.asyncio, "sleep", _sleep),
+        patch.object(conn_mod.ir, "async_create_issue") as create,
+    ):
+        await c._async_run()
+    create.assert_called_once()
+
+
+async def test_run_success_then_close(hass: HomeAssistant) -> None:
+    c = _make(hass, _login_then_data())
+
+    async def _noop() -> None:
+        return
+
+    async def _sleep(_seconds: float) -> None:
+        c._closed = True
+
+    with (
+        patch.object(c, "_async_keepalive", _noop),
+        patch.object(conn_mod.asyncio, "sleep", _sleep),
+    ):
+        await c._async_run()
+    assert c.items == ITEMS
+
+
+async def test_run_handles_connect_error(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+
+    async def _boom(url: str) -> None:
+        raise RuntimeError("connect failed")
+
+    async def _sleep(_seconds: float) -> None:
+        c._closed = True
+
+    with (
+        patch.object(c, "_async_connect_and_listen", _boom),
+        patch.object(conn_mod.asyncio, "sleep", _sleep),
+    ):
+        await c._async_run()  # error is swallowed, loop exits cleanly
+    assert c._closed is True
+
+
+async def test_handle_items_only_does_not_ready(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    c._handle({"result": {"items": ITEMS}})  # items but no devices yet
+    assert c.items == ITEMS
+    assert not c._ready.is_set()
+
+
+async def test_handle_captures_firmware(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    c._handle({"result": {"firmware": "4.1.6", "serial": 105203280}})
+    assert c.firmware == "4.1.6"
+
+
+async def test_keepalive_sends_queries(hass: HomeAssistant) -> None:
+    ws = _WS([])
+    c = _make(hass, ws)
+    c._ws = ws  # type: ignore[assignment]
+    calls = {"n": 0}
+
+    async def _sleep(_seconds: float) -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise asyncio.CancelledError
+
+    with patch.object(conn_mod.asyncio, "sleep", _sleep), pytest.raises(asyncio.CancelledError):
+        await c._async_keepalive()
+    assert ws.sent  # at least one keepalive query was sent
+
+
+async def test_misc_accessors_and_start(hass: HomeAssistant) -> None:
+    c = _make(hass, _WS([]))
+    assert c.serial == "105203280"
+    c.device_metadata = {"x": {"k": 1}}
+    assert c.get_device_metadata("x") == {"k": 1}
+    assert c.get_device_metadata("missing") == {}
+    c._update_item(None, 5)  # no item id -> no-op
+    assert c._resolve_url() == "ws://x:1"
+
+    async def _noop() -> None:
+        return
+
+    with patch.object(c, "_async_run", _noop):
+        c.start()
+    await c.async_stop()
+
+
+async def test_async_stop(hass: HomeAssistant) -> None:
+    ws = _WS([])
+    c = _make(hass, ws)
+    c._ws = ws  # type: ignore[assignment]
+    await c.async_stop()
+    assert c._closed is True
+    assert ws.closed is True

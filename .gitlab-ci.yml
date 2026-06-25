@@ -4,6 +4,9 @@ stages:
 variables:
   GIT_DEPTH: 0  # Full clone to preserve history for squashing
   GITHUB_REPO: "ezloteam/ezlopi-hass-integration"
+  # Space-separated paths that live ONLY on GitLab and must never be mirrored
+  # to the public GitHub repo (stripped from the squashed commit below).
+  GITHUB_EXCLUDE: "CONTRIBUTING.md"
 
 sync-to-github:
   stage: sync
@@ -98,6 +101,11 @@ sync-to-github:
       fi
 
     - git add -A
+    - |
+      # Strip GitLab-only files so they never reach the public GitHub mirror
+      for path in $GITHUB_EXCLUDE; do
+        git rm -r --cached --ignore-unmatch "$path" >/dev/null 2>&1 || true
+      done
     - git commit -F /tmp/commit_msg.txt || echo "No changes to commit"
 
     # Force push to GitHub master (squashed history)

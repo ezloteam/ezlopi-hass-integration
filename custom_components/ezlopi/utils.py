@@ -1,19 +1,22 @@
+from __future__ import annotations
+
 import logging
 import asyncio
 import json
+from typing import Any
 from .device_types import detect_device_platform, get_additional_entities
 
 _LOGGER = logging.getLogger(__name__)
 
 import subprocess
 
-def get_items(connector):
+def get_items(connector: Any) -> Any:
     return connector.items
 
-def get_devices(connector):
+def get_devices(connector: Any) -> Any:
     return connector.devices
 
-def set_item_value_request(id, value):
+def set_item_value_request(id: str, value: Any) -> dict[str, Any]:
     return {
         "id": "_ID_",
         "method": "hub.item.value.set",
@@ -24,7 +27,7 @@ def set_item_value_request(id, value):
         }
     }
 
-def system_logging_param():
+def system_logging_param() -> dict[str, Any]:
     return {
             "id": "_ID_",
             "method": "hub.log.set",
@@ -34,15 +37,20 @@ def system_logging_param():
             }
         }
 
-def set_item_value ():
+def set_item_value() -> dict[str, Any]:
     return{
             "id": "_ID_",
             "method": "hub.item.value.set",
             "params": ""
         }
 
-def get_devices_info ():
+def get_devices_info() -> list[dict[str, Any]]:
     return [
+            {
+                "method": "hub.info.get",
+                "id": "_ID_",
+                "params": {}
+            },
             {
                 "method": "hub.items.list",
                 "id": "_ID_",
@@ -55,7 +63,7 @@ def get_devices_info ():
             }
         ]
 
-def get_login_params ():
+def get_login_params() -> dict[str, Any]:
     return {
             "method": "hub.offline.login.ui",
             "id": "_ID_",
@@ -63,13 +71,14 @@ def get_login_params ():
             }
         }
 
-def getDeviceName(id, connector):
+def getDeviceName(id: str, connector: Any) -> str | None:
     json_data = get_devices(connector)
     for json_item in json_data:
         if json_item["_id"] == id:
-            return json_item["name"]
+            return str(json_item["name"])
+    return None
 
-def getItemsData(connector, id=''):
+def getItemsData(connector: Any, id: str = '') -> Any:
     result = []
     json_data = get_items(connector)
 
@@ -179,7 +188,7 @@ def getItemsData(connector, id=''):
     return result
 
 
-async def get_devices_from_platform(api):
+async def get_devices_from_platform(api: Any) -> Any:
     items = getItemsData(api)
     _LOGGER.info("items:{}".format(items))
 
@@ -192,11 +201,11 @@ async def get_devices_from_platform(api):
 
     return items
 
-async def get_device_data(device_id, api):
+async def get_device_data(device_id: str, api: Any) -> Any:
     json_data = getItemsData(api, device_id)
     return json_data["value"]
 
-async def ping_host(ip_address):
+async def ping_host(ip_address: str) -> bool:
     try:
         response = subprocess.run(
             ["ping", "-c", "3", "-W", "1", ip_address],
@@ -208,7 +217,7 @@ async def ping_host(ip_address):
         _LOGGER.error(f"Error during ping: {e}")
         return False
 
-def extract_battery_info(devices):
+def extract_battery_info(devices: list[dict[str, Any]]) -> dict[Any, Any]:
     """Extract battery information for all devices.
     
     Returns dict mapping device_id to battery info.
@@ -232,7 +241,7 @@ def extract_battery_info(devices):
     
     return battery_info
 
-def get_device_battery_level(device_id, connector):
+def get_device_battery_level(device_id: str, connector: Any) -> Any:
     """Get battery level for a specific device."""
     devices = getItemsData(connector)
     if not devices:
@@ -245,7 +254,7 @@ def get_device_battery_level(device_id, connector):
     
     return None
 
-def should_create_low_battery_sensor(battery_level, threshold=20):
+def should_create_low_battery_sensor(battery_level: Any, threshold: int = 20) -> bool:
     """Check if a low battery sensor should be created."""
     if battery_level is None:
         return False

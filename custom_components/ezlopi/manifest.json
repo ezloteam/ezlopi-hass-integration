@@ -2,17 +2,24 @@
   "domain": "ezlopi",
   "name": "ezloPi",
   "version": "1.0",
-  "requirements": [ "websockets", "websocket-client" ],
+  "requirements": [],
   "dependencies": [],
-  "codeowners": [],
-  "iot_class": "local_polling",
+  "codeowners": [ "@ezloteam" ],
+  "iot_class": "local_push",
   "config_flow": true,
-  "documentation": "",
+  "documentation": "https://github.com/ezloteam/ezlopi-hass-integration",
   "integration_type": "hub",
+  "zeroconf": [
+    "_ezlo._tcp.local."
+  ],
   "supported_brands": [
     "ezloPi"
   ],
   "platforms": [
+    "binary_sensor",
+    "climate",
+    "light",
+    "lock",
     "sensor",
     "switch"
   ]

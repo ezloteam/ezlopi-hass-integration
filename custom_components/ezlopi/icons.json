@@ -1,0 +1,27 @@
+{
+  "entity": {
+    "switch": {
+      "switch": {
+        "default": "mdi:toggle-switch-variant"
+      }
+    },
+    "light": {
+      "dimmer": {
+        "default": "mdi:lightbulb"
+      }
+    },
+    "lock": {
+      "lock": {
+        "default": "mdi:lock",
+        "state": {
+          "unlocked": "mdi:lock-open"
+        }
+      }
+    },
+    "climate": {
+      "thermostat": {
+        "default": "mdi:thermostat"
+      }
+    }
+  }
+}

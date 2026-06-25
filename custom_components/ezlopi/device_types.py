@@ -1,11 +1,13 @@
 """Device type mapping and detection for ezloPi devices."""
+from __future__ import annotations
+
 import logging
-from typing import Dict, Any, Optional
+from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
 # Complete device type mapping registry
-DEVICE_TYPE_MAP = {
+DEVICE_TYPE_MAP: dict[str, dict[str, Any]] = {
     # Motion sensors
     "sensor.motion": {
         "platform": "binary_sensor",
@@ -88,7 +90,7 @@ DEVICE_TYPE_MAP = {
 }
 
 # Item name patterns for detection
-ITEM_NAME_PATTERNS = {
+ITEM_NAME_PATTERNS: dict[str, dict[str, Any]] = {
     # Binary sensor patterns
     "motion": {"platform": "binary_sensor", "device_class": "motion"},
     "door": {"platform": "binary_sensor", "device_class": "door"},
@@ -125,7 +127,7 @@ ITEM_NAME_PATTERNS = {
 }
 
 # Category to platform mapping
-CATEGORY_MAP = {
+CATEGORY_MAP: dict[str, dict[str, Any]] = {
     "security": {
         "default_platform": "binary_sensor",
         "subcategories": {
@@ -164,7 +166,7 @@ CATEGORY_MAP = {
 }
 
 
-def detect_device_platform(device_info: Dict[str, Any]) -> Dict[str, Any]:
+def detect_device_platform(device_info: dict[str, Any]) -> dict[str, Any]:
     """
     Detect the appropriate platform and device class for a device.
     
@@ -191,7 +193,8 @@ def detect_device_platform(device_info: Dict[str, Any]) -> Dict[str, Any]:
         # Check subcategory first
         if subcategory and "subcategories" in cat_info:
             if subcategory in cat_info["subcategories"]:
-                result = cat_info["subcategories"][subcategory].copy()
+                sub: dict[str, Any] = cat_info["subcategories"][subcategory]
+                result = sub.copy()
                 _LOGGER.debug(f"Device detected by category/subcategory '{category}/{subcategory}': {result}")
                 return result
         
@@ -203,12 +206,13 @@ def detect_device_platform(device_info: Dict[str, Any]) -> Dict[str, Any]:
         _LOGGER.debug(f"Device detected by category '{category}': {result}")
         return result
     
-    # 3. Check item name patterns
-    item_name = device_info.get("name", "").lower()
-    device_name = device_info.get("deviceName", "").lower()
-    
+    # 3. Check item name patterns. Match only against the item name — NOT the
+    # device name: a device called "Frankever Dimmer" must not turn its on/off
+    # item into a light just because the device name contains "dimmer".
+    item_name = (device_info.get("name") or "").lower()
+
     for pattern, mapping in ITEM_NAME_PATTERNS.items():
-        if pattern in item_name or pattern in device_name:
+        if pattern in item_name:
             result = mapping.copy()
             _LOGGER.debug(f"Device detected by name pattern '{pattern}': {result}")
             return result
@@ -217,7 +221,7 @@ def detect_device_platform(device_info: Dict[str, Any]) -> Dict[str, Any]:
     return detect_by_value_type(device_info)
 
 
-def detect_by_value_type(device_info: Dict[str, Any]) -> Dict[str, Any]:
+def detect_by_value_type(device_info: dict[str, Any]) -> dict[str, Any]:
     """
     Detect platform based on value type (fallback method).
     
@@ -262,7 +266,7 @@ def detect_by_value_type(device_info: Dict[str, Any]) -> Dict[str, Any]:
     return {"platform": "sensor", "device_class": None}
 
 
-def get_additional_entities(device_type: str) -> list:
+def get_additional_entities(device_type: str) -> list[Any]:
     """
     Get additional entities that should be created for a device type.
     
@@ -273,11 +277,12 @@ def get_additional_entities(device_type: str) -> list:
         List of additional entity configurations
     """
     if device_type in DEVICE_TYPE_MAP:
-        return DEVICE_TYPE_MAP[device_type].get("additional_entities", [])
+        entities: list[Any] = DEVICE_TYPE_MAP[device_type].get("additional_entities", [])
+        return entities
     return []
 
 
-def should_create_multiple_entities(device_info: Dict[str, Any]) -> bool:
+def should_create_multiple_entities(device_info: dict[str, Any]) -> bool:
     """
     Check if a device should create multiple entities.
     
